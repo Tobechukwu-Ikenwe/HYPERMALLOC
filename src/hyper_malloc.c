@@ -42,8 +42,10 @@ void *hypermalloc(int user_size){
 	list_head = h;
 
 	//move up one block header to return the part of the block we can use.
+	printf("Allocated %d bytes successfully \n", user_size);
+
 	return (void*)(h+1);
-	//
+
 
 		
 	}
@@ -56,9 +58,10 @@ void *hypermalloc(int user_size){
 		if (current->size >= user_size || current->free == 1){
 			// free suitable block return address  of the block
 			// that is exactly one block header pass current which is start of allocated block
-		printf("Allocated %d bytes successfully \n", user_size);
 		// set free to 0 and remove from free 
 		current->free = 0;
+		printf("Allocated %d bytes successfully \n", user_size);
+
 		return (void*)(current + 1);
 
 		}else{
@@ -80,7 +83,43 @@ void *hypermalloc(int user_size){
 	current->next = h; // add to current the end of our list
 	h->size = user_size;
 	h->next = NULL;
+	printf("Allocated %d bytes successfully \n", user_size);
+
 	return (void*)(h+1);
 
 
+
 	}
+
+
+// takes in the pointer returned by hypermalloc and frees the allocated block
+void hyper_free(void* ptr){
+
+
+
+	if (ptr == NULL){
+		fprintf(stderr, "Pass in a valid pointer to a memory region\n");
+		return;
+	}
+
+	
+
+
+	//go a block header behind pointer to see the metadata for the block
+	BlockHeader* h = (BlockHeader*)(ptr - 1 * (sizeof(BlockHeader)));
+
+	//set free to 1
+	
+	h->free = 1;
+	//set it as the new list head for ease of search for new memory
+	//move original list_head to be after h
+	h->next = list_head;
+	list_head = h;
+	printf("Memory at address %p has been freed\n.", ptr);
+
+	
+
+
+
+	
+}
