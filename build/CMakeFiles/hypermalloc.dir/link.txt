@@ -1,0 +1,2 @@
+/usr/bin/ar qc libhypermalloc.a CMakeFiles/hypermalloc.dir/src/hyper_malloc.c.o
+/usr/bin/ranlib libhypermalloc.a
