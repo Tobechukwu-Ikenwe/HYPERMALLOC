@@ -9,6 +9,10 @@
 
 #include "hypermalloc.h"
 // My HyperMalloc API.
+//
+#include <limits.h>
+
+#include <stdint.h>
 
 
 /*
@@ -64,6 +68,11 @@ void init_heap(void)
  * order of blocks and the order of free blocks are different.
  */
 
+
+// MAGIC VALUE TO IDENTIFY BLOCKS THAT WE ALLOCATED
+#define HYPERMALLOC_MAGIC 0xDEADBEEFCAFEBABEULL
+
+
 typedef struct BlockHeader {
 
 	// size of the block.
@@ -86,6 +95,9 @@ typedef struct BlockHeader {
 	// status: is this block free or allocated?
 	int free;
 
+	// 64 bit magic value
+	uint64_t magic;
+
 } BlockHeader;
 
 
@@ -94,16 +106,98 @@ typedef struct BlockHeader {
 static BlockHeader* list_head = NULL;
 
 
-// create the head of our free list.
-static BlockHeader* free_list_head = NULL;
 
-// POINTER TO end of the heap 
+/*
+ * BITMAP OF NON-EMPTY FREE LISTS
+ *
+ * Bit i is 1 when free_lists[i] contains at least one block.
+ *
+ * This lets find_free_block() determine which size class
+ * contains a free block without scanning empty lists.
+ */
+static uint32_t free_list_bitmap = 0;
+
+
+// Number of segregated free-list size classes.
+#define NUM_SIZE_CLASSES 32
+
+// Each entry points to the first free block
+// belonging to that size class.
+//
+// Example:
+//
+//     free_lists[0] -> 16-byte blocks
+//     free_lists[1] -> 32-byte blocks
+//     free_lists[2] -> 64-byte blocks
+//     free_lists[3] -> 128-byte blocks
+//     ...
+//
+// Each individual list is doubly linked using:
+//     previous_free
+//     next_free
+//
+static BlockHeader* free_lists[NUM_SIZE_CLASSES] = { NULL };
+
+
+static size_t get_size_class(size_t size)
+{
+	// Size 0 and 1 belong to the first class.
+	if (size <= 1) {
+		return 0;
+	}
+
+	/*
+	 * Find the position of the highest set bit in
+	 * (size - 1).
+	 *
+	 * The number of leading zero bits tells us where
+	 * that highest bit is located.
+	 */
+	return sizeof(size_t) * CHAR_BIT
+	       - __builtin_clzl(size - 1)
+	       - 1;
+}
+
+
+// pointer to the end of the physical heap.
 static BlockHeader* heap_tail = NULL;
+
+
+// the pointer to a block header is exacly one block header behind the ptr to the user memory
+//CALCULATE BLOCKHEADER FROM POINTER
+//
+
+static BlockHeader* calculate_header(void* ptr){
+	return (BlockHeader*)((char*)ptr - sizeof(BlockHeader));
+}
+
+/*
+ *CHECK WHETHER POINTER IS INSIDE THE HEAP
+ USED TO ELIMINATE INVALID POINTERS THAT OUR ALLOCATOR DID NOT RETURN
+ * */
+
+
+static int validate_ptr(void* ptr){
+	// is ptr inside the heap
+	if (ptr < heap_start || ptr >= heap_end){
+		return 0;
+	}
+	//is it a pointer that hypermalloc returned 
+	// calculate blockheader from the pointer
+	
+	BlockHeader* block = calculate_header(ptr);
+	if (block->magic != HYPERMALLOC_MAGIC){
+		return 0;
+	}
+
+	//success
+	return 1;
+}
 
 /*
  * FIND A BLOCK
  *
- * Search the physical heap list for the block that owns
+ * Search the physical heap list for the now allocated block that owns
  * the pointer returned to the user.
  *
  * The user receives:
@@ -111,84 +205,102 @@ static BlockHeader* heap_tail = NULL;
  *     [BlockHeader][user memory]
  *                  ^
  *                  ptr
- *
- * Therefore the user pointer must equal (current + 1).
  */
 
 static BlockHeader* find_block(void* ptr)
 {
-	BlockHeader* current = list_head;
-
-	while (current != NULL) {
-
-		// check whether this block owns the pointer
-		if ((void*)(current + 1) == ptr) {
-			return current;
-		}
-
-		// move to the next physical block
-		current = current->next;
+	//validate the pointer being passed in
+	if (validate_ptr(ptr)){
+		// return the pointer to the blockheader
+		return calculate_header(ptr);
 	}
-
-	// no block owns this pointer
+	//throw an error
 	return NULL;
+	
+
 }
 
-
 /*
- * ADD A BLOCK TO THE FREE LIST
+ * ADD A BLOCK TO A SEGREGATED FREE LIST
  *
- * i insert the block at the front of the doubly linked list.
+ * Insert the block at the front of the free list
+ * corresponding to its size class.
  *
- * Before:
+ * Example:
  *
- *     free_list_head
- *          ↓
- *          A <-> B
+ *     block->size = 256
+ *            ↓
+ *     get_size_class(256)
+ *            ↓
+ *         class 8
+ *            ↓
+ *     free_lists[8]
  *
- * After:
  *
- *     free_list_head
- *          ↓
- *          H <-> A <-> B
+ * Each size class has its own doubly linked list.
+ *
+ * The bitmap records that this size class is non-empty.
  */
 
 static void insert_into_free_list(BlockHeader* block)
 {
-	// the new head has no previous block
+	// Determine which size class this block belongs to.
+	size_t class = get_size_class(block->size);
+
+	// Get the current head of this size class.
+	BlockHeader* head = free_lists[class];
+
+	// The new block becomes the first block in the list.
 	block->previous_free = NULL;
 
-	// the new head points forward to the old head
-	block->next_free = free_list_head;
+	// Connect the new block to the old head.
+	block->next_free = head;
 
-	// if the old head exists, connect it back to block
-	if (free_list_head != NULL) {
-		free_list_head->previous_free = block;
+	// If the old head exists, connect it back to the new block.
+	if (head != NULL) {
+		head->previous_free = block;
 	}
 
-	// block is now the new head
-	free_list_head = block;
+	// Make block the new head of this size class.
+	free_lists[class] = block;
+
+	/*
+	 * Mark this size class as non-empty.
+	 *
+	 * Example:
+	 *
+	 *     class = 8
+	 *
+	 *     00000000000000000000000100000000
+	 *                            ↑
+	 *                         bit 8 = 1
+	 */
+	free_list_bitmap |= (1U << class);
 }
 
 
 /*
- * REMOVE A BLOCK FROM THE FREE LIST
+ * REMOVE A BLOCK FROM A SEGREGATED FREE LIST
  *
- * There are three possible situations:
+ * Remove block from the doubly linked list belonging
+ * to its size class.
  *
- * 1. block is the head
- * 2. block is in the middle
- * 3. block is the tail
+ * Because every block stores previous_free and next_free,
+ * removal is O(1).
  *
- * The previous_free and next_free pointers allow us
- * to reconnect the neighboring blocks without walking
- * backward through the list.
+ * If removing the final block from a size class,
+ * clear that class's bit in free_list_bitmap.
  */
 
 static void remove_from_free_list(BlockHeader* block)
 {
-	// if there is a previous free block,
-	// connect it to block's next free block.
+	// Determine which size class this block belongs to.
+	size_t class = get_size_class(block->size);
+
+	/*
+	 * If there is a previous free block,
+	 * connect it directly to the next free block.
+	 */
 	if (block->previous_free != NULL) {
 
 		block->previous_free->next_free =
@@ -196,23 +308,37 @@ static void remove_from_free_list(BlockHeader* block)
 
 	} else {
 
-		// block is the free-list head.
-		free_list_head = block->next_free;
+		/*
+		 * No previous block means block is the head
+		 * of this size class.
+		 */
+		free_lists[class] = block->next_free;
 	}
 
-	// if there is a next free block,
-	// connect it back to block's previous free block.
+	/*
+	 * If there is a next free block,
+	 * connect it back to the previous free block.
+	 */
 	if (block->next_free != NULL) {
 
 		block->next_free->previous_free =
 			block->previous_free;
 	}
 
-	// block is no longer part of the free list.
+	/*
+	 * Remove block from the free list completely.
+	 */
 	block->previous_free = NULL;
 	block->next_free = NULL;
-}
 
+	/*
+	 * If this class is now empty, clear its bitmap bit.
+	 */
+	if (free_lists[class] == NULL) {
+
+		free_list_bitmap &= ~(1U << class);
+	}
+}
 /*
  * REQUEST A NEW BLOCK FROM THE OPERATING SYSTEM
  *
@@ -255,6 +381,9 @@ static BlockHeader* request_block(size_t user_size)
 	h->next = NULL;
 	h->previous = heap_tail;
 
+	// set magic 
+	h->magic = HYPERMALLOC_MAGIC;
+
 	// add h to the physical heap list
 	if (heap_tail == NULL) {
 
@@ -272,6 +401,8 @@ static BlockHeader* request_block(size_t user_size)
 
 	return h;
 }
+
+
 /*
  * SPLIT A FREE BLOCK
  *
@@ -357,50 +488,71 @@ static BlockHeader* split_block(BlockHeader* block, size_t user_size)
 /*
  * FIND A SUITABLE FREE BLOCK
  *
- * Search only the free list.
+ * Search the free list bucket to find the appropriate size
  *
- * This is important:
- * we do NOT need to walk allocated blocks because they
- * cannot satisfy the allocation request.
+ */
+
+
+/*
+ * FIND A SUITABLE FREE BLOCK
+ *
+ * Find a free block large enough for user_size.
+ *
+ * The allocator uses:
+ *
+ *     1. get_size_class()
+ *          O(1) class calculation using CLZ.
+ *
+ *     2. free_list_bitmap
+ *          Quickly identifies non-empty size classes.
+ *
+ *     3. free_lists[class]
+ *          Direct access to the appropriate free list.
+ *
+ * We never scan smaller size classes because they cannot
+ * satisfy the request.
  */
 
 static BlockHeader* find_free_block(size_t user_size)
 {
-	BlockHeader* current = free_list_head;
+	/*
+	 * Determine the smallest size class capable of
+	 * satisfying the request.
+	 */
+	size_t class = get_size_class(user_size);
 
-	while (current != NULL) {
+	/*
+	 * Ignore all classes smaller than class.
+	 *
+	 * Shift the bitmap so that bit 0 represents our
+	 * starting class.
+	 */
+	uint32_t available =
+		free_list_bitmap >> class;
 
-		// Find the first free block large enough.
-		if (current->size >= user_size) {
-			return current;
-		}
-
-		// Move through the free list.
-		current = current->next_free;
+	/*
+	 * No suitable free-list class contains a block.
+	 */
+	if (available == 0) {
+		return NULL;
 	}
 
-	// No suitable free block exists.
-	return NULL;
+	/*
+	 * Find the first non-empty class at or above
+	 * the requested class.
+	 *
+	 * __builtin_ctz() finds the first set bit.
+	 */
+	size_t offset = __builtin_ctz(available);
+
+	size_t selected_class = class + offset;
+
+	/*
+	 * Because the bitmap guarantees that this list
+	 * is non-empty, its head is immediately available.
+	 */
+	return free_lists[selected_class];
 }
-
-
-/*
- * HYPER_MALLOC()
- *
- * Allocate user_size bytes of memory.
- *
- * Allocation strategy:
- *
- * 1. Initialize the heap.
- * 2. Search the free list.
- * 3. If a suitable free block exists:
- *      - split it if possible
- *      - otherwise use the entire block
- * 4. If no free block exists:
- *      - request memory from the OS.
- */
-
-
 /*
  * COALESCE WITH THE NEXT PHYSICAL BLOCK
  *
@@ -473,7 +625,7 @@ void* hyper_malloc(size_t user_size)
 
 
 	/*
-	 * SEARCH THE FREE LIST
+	 * SEARCH THE segregated  FREE LISTs
 	 */
 
 	BlockHeader* block = find_free_block(user_size);
@@ -674,36 +826,131 @@ static void hyper_copy(void* old_ptr, void* new_ptr, size_t size)
  * Returns 1 if enough space was found.
  * Returns 0 if the adjacent free blocks are not enough.
  */
+//
+// static int expand_block(BlockHeader* block, size_t new_size)
+// {
+// 	// The block is already large enough. ideally realloc should not even let his happen
+// 	if (new_size <= block->size) {
+// 		return 1;
+// 	}
+//
+// 	// Amount of additional payload required.
+// 	size_t required = new_size - block->size;
+//
+// 	// Start with the physical block immediately after block.
+// 	BlockHeader* next = block->next;
+//
+// 	// Keep track of how much neighboring memory we can consume.
+// 	size_t available = 0;
+//
+// 	while (next != NULL && next->free == 1) {
+//
+// 		/*
+// 		 * A free block contributes:
+// 		 *
+// 		 *     its payload
+// 		 *     + its BlockHeader
+// 		 *
+// 		 * because once absorbed, its header becomes usable space.
+// 		 */
+//
+// 		available += sizeof(BlockHeader) + next->size;
+//
+// 		if (available >= required) {
+// 			break;
+// 		}
+//
+// 		next = next->next;
+// 	}
+//
+//
+// 	// The adjacent free blocks were not large enough.
+// 	if (available < required) {
+// 		return 0;
+// 	}
+//
+//
+// 	/*
+// 	 * ABSORB THE REQUIRED FREE BLOCKS
+// 	 */
+//
+// 	next = block->next;
+//
+// 	while (block->size < new_size &&
+// 	       next != NULL &&
+// 	       next->free == 1) {
+//
+// 		// Save the block after next before removing next.
+// 		BlockHeader* after = next->next;
+//
+// 		// Remove next from the free list.
+// 		remove_from_free_list(next);
+//
+// 		// Absorb next into block.
+// 		block->size += sizeof(BlockHeader) + next->size;
+//
+// 		// Connect block to the next physical block.
+// 		block->next = after;
+//
+// 		// Connect the next physical block back to block.
+// 		if (after != NULL) {
+// 			after->previous = block;
+// 		} else {
+// 			// The absorbed block was the last physical block.
+// 			heap_tail = block;
+// 		}
+//
+// 		// Move forward.
+// 		next = after;
+//
+//
+// 	}
+//
+//
+// 	// The block may have absorbed slightly more space than requested. so just set size to be safe
+// 	block->size = new_size;
+//
+// 	return 1;
+// }
 
 static int expand_block(BlockHeader* block, size_t new_size)
 {
-	// The block is already large enough.
+	/*
+	 * The block is already large enough.
+	 */
 	if (new_size <= block->size) {
 		return 1;
 	}
 
-	// Amount of additional payload required.
+	/*
+	 * Calculate how many additional payload bytes
+	 * are required.
+	 */
 	size_t required = new_size - block->size;
 
-	// Start with the physical block immediately after block.
-	BlockHeader* next = block->next;
-
-	// Keep track of how much neighboring memory we can consume.
+	/*
+	 * FIRST PASS
+	 *
+	 * Determine whether the consecutive free blocks
+	 * immediately following `block` contain enough
+	 * space.
+	 *
+	 * We do NOT modify anything during this pass.
+	 */
 	size_t available = 0;
+	BlockHeader* next = block->next;
 
 	while (next != NULL && next->free == 1) {
 
 		/*
-		 * A free block contributes:
-		 *
-		 *     its payload
-		 *     + its BlockHeader
-		 *
-		 * because once absorbed, its header becomes usable space.
+		 * When this block is absorbed, its header becomes
+		 * usable space too.
 		 */
-
 		available += sizeof(BlockHeader) + next->size;
 
+		/*
+		 * Stop as soon as we know there is enough space.
+		 */
 		if (available >= required) {
 			break;
 		}
@@ -711,60 +958,83 @@ static int expand_block(BlockHeader* block, size_t new_size)
 		next = next->next;
 	}
 
-
-	// The adjacent free blocks were not large enough.
+	/*
+	 * Not enough adjacent free memory.
+	 *
+	 * Nothing has been modified, so the caller can safely
+	 * fall back to allocating a new block.
+	 */
 	if (available < required) {
 		return 0;
 	}
 
-
 	/*
-	 * ABSORB THE REQUIRED FREE BLOCKS
+	 * SECOND PASS
+	 *
+	 * We already know enough space exists.
+	 *
+	 * Now absorb the consecutive free blocks.
 	 */
-
 	next = block->next;
 
-	while (block->size < new_size &&
-	       next != NULL &&
-	       next->free == 1) {
+	while (block->size < new_size) {
 
-		// Save the block after next before removing next.
+		/*
+		 * `next` must be a free physical neighbor because
+		 * the first pass proved enough space exists.
+		 */
 		BlockHeader* after = next->next;
 
-		// Remove next from the free list.
+		/*
+		 * Remove the block from its segregated free list.
+		 *
+		 * This is O(1).
+		 */
 		remove_from_free_list(next);
 
-		// Absorb next into block.
+		/*
+		 * Absorb:
+		 *
+		 *     [next header][next payload]
+		 *
+		 * into the current block.
+		 */
 		block->size += sizeof(BlockHeader) + next->size;
 
-		// Connect block to the next physical block.
+		/*
+		 * Remove `next` from the physical heap list.
+		 */
 		block->next = after;
 
-		// Connect the next physical block back to block.
+		/*
+		 * Repair the backward physical link.
+		 */
 		if (after != NULL) {
 			after->previous = block;
 		} else {
-			// The absorbed block was the last physical block.
+			/*
+			 * The absorbed block was the last block
+			 * in the physical heap.
+			 */
 			heap_tail = block;
 		}
 
-		// Move forward.
 		next = after;
-
-
 	}
 
-
-	// The block may have absorbed slightly more space than requested. so just set size to be safe
+	/*
+	 * We may have absorbed slightly more memory than
+	 * requested because blocks are indivisible.
+	 *
+	 * Expose exactly the requested payload size.
+	 */
 	block->size = new_size;
 
 	return 1;
 }
 
-
-
 /*
- * HYPER_REALLOC()
+ * HYPER_REALLOC()	
  *
  * Change the size of an existing allocation.
  *
@@ -779,7 +1049,7 @@ static int expand_block(BlockHeader* block, size_t new_size)
  * 3. new_size <= old size
  *      shrink in place
  *
- * 4. adjacent free blocks provide enough space
+ * 4. new_size > old_size : adjacent free blocks provide enough space
  *      expand in place
  *
  * 5. otherwise
@@ -853,7 +1123,7 @@ void* hyper_realloc(void* old_ptr, size_t new_size)
 
 
 	/*
-	 * TRY TO EXPAND IN PLACE
+	 * if not same or smaller,  TRY TO EXPAND IN PLACE
 	 */
 
 	if (expand_block(block, new_size)) {
@@ -902,72 +1172,72 @@ void* hyper_realloc(void* old_ptr, size_t new_size)
  * that their basic invariants are still correct.
  *
  * This function is for debugging and testing.
- * It should NOT be used inside the timed benchmark.
+ * It will NOT be used inside the timed benchmark.
  */
 
-int check_heap(void)
-{
-	/*
-	 * CHECK THE PHYSICAL HEAP LIST
-	 */
-
-	BlockHeader* current = list_head;
-
-	while (current != NULL) {
-
-		// Every block must have a valid size.
-		if (current->size == 0) {
-			fprintf(stderr,
-				"check_heap: block has size 0\n");
-			return 0;
-		}
-
-		// Free blocks must have free == 1.
-		if (current->free != 0 &&
-		    current->free != 1) {
-
-			fprintf(stderr,
-				"check_heap: invalid free flag\n");
-			return 0;
-		}
-
-		current = current->next;
-	}
-
-
-	/*
-	 * CHECK THE FREE LIST
-	 */
-
-	current = free_list_head;
-
-	while (current != NULL) {
-
-		// Every block on the free list must be marked free.
-		if (current->free != 1) {
-			fprintf(stderr,
-				"check_heap: allocated block in free list\n");
-			return 0;
-		}
-
-		/*
-		 * If there is a next free block, its previous_free
-		 * pointer must point back to the current block.
-		 */
-		if (current->next_free != NULL &&
-		    current->next_free->previous_free != current) {
-
-			fprintf(stderr,
-				"check_heap: broken free-list link\n");
-			return 0;
-		}
-
-		current = current->next_free;
-	}
-
-
-	return 1;
-}
+// int check_heap(void)
+// {
+// 	/*
+// 	 * CHECK THE PHYSICAL HEAP LIST
+// 	 */
+//
+// 	BlockHeader* current = list_head;
+//
+// 	while (current != NULL) {
+//
+// 		// Every block must have a valid size.
+// 		if (current->size == 0) {
+// 			fprintf(stderr,
+// 				"check_heap: block has size 0\n");
+// 			return 0;
+// 		}
+//
+// 		// Free blocks must have free == 1.
+// 		if (current->free != 0 &&
+// 		    current->free != 1) {
+//
+// 			fprintf(stderr,
+// 				"check_heap: invalid free flag\n");
+// 			return 0;
+// 		}
+//
+// 		current = current->next;
+// 	}
+//
+//
+// 	/*
+// 	 * CHECK THE FREE LIST
+// 	 */
+//
+// 	current = free_list_head;
+//
+// 	while (current != NULL) {
+//
+// 		// Every block on the free list must be marked free.
+// 		if (current->free != 1) {
+// 			fprintf(stderr,
+// 				"check_heap: allocated block in free list\n");
+// 			return 0;
+// 		}
+//
+// 		/*
+// 		 * If there is a next free block, its previous_free
+// 		 * pointer must point back to the current block.
+// 		 */
+// 		if (current->next_free != NULL &&
+// 		    current->next_free->previous_free != current) {
+//
+// 			fprintf(stderr,
+// 				"check_heap: broken free-list link\n");
+// 			return 0;
+// 		}
+//
+// 		current = current->next_free;
+// 	}
+//
+//
+// 	return 1;
+// }
 
 //for tests
 //
