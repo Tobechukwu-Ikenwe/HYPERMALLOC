@@ -1,58 +1,64 @@
 cmake_minimum_required(VERSION 3.16)
 
+project(HyperMalloc LANGUAGES C)
 
 # Use the C11 language standard.
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-
-project(HyperMalloc LANGUAGES C)
-
-
-#library that every target will use for the compiler configuration
+# Compiler warnings shared by every target.
 add_library(project_warnings INTERFACE)
 
-# Apply strict warnings to every target that uses this configuration.
 target_compile_options(project_warnings INTERFACE
     -Wall
     -Wextra
     -Wpedantic
 )
 
-
-
-# to be used as a library for the benchmarks and tests
+# HyperMalloc library.
 add_library(hypermalloc STATIC
-    src/hyper_malloc.c
+    src/heap/heap.c
+    src/block/block.c
+    src/freelist/free_list.c
+    src/hypermalloc/hypermalloc.c
+    src/hypermalloc/free.c
+    src/hypermalloc/realloc.c
 )
 
-#apply configs to the hypermalloc library
+# Apply shared compiler configuration.
 target_link_libraries(hypermalloc PUBLIC
     project_warnings
-    )
+)
 
-
-
-
-#for the header files
-# Make the public HyperMalloc headers available to this library
-# and to targets that link against it.
+# Public headers.
 target_include_directories(hypermalloc PUBLIC
     ${PROJECT_SOURCE_DIR}/include
 )
 
-# Build the benchmark program.
+# Private headers.
+target_include_directories(hypermalloc PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+# Build the malloc benchmark.
+add_executable(benchmark_malloc
+    benchmarks/benchmark_malloc.c
+)
+
+target_link_libraries(benchmark_malloc PRIVATE
+    hypermalloc
+)
+
+# Build the full allocator benchmark.
 add_executable(full_benchmark
     benchmarks/full_benchmark.c
 )
 
-# Link the benchmark against the HyerMalloc allocator.
 target_link_libraries(full_benchmark PRIVATE
     hypermalloc
 )
 
-# Use Debug unless a build type is explicitly selected.
+# Use Debug unless explicitly selected.
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
-
