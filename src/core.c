@@ -58,6 +58,13 @@ typedef struct DirectMap {
     size_t alignment;
 } DirectMap;
 
+typedef struct CheckFailure {
+    int code;
+    const void *address;
+    size_t expected;
+    size_t actual;
+} CheckFailure;
+
 static Chunk *chunks;
 static DirectMap *direct_maps;
 static Block *free_lists[HM_CLASS_COUNT];
@@ -348,8 +355,9 @@ static Block *lookup_chunk_block(void *ptr)
         Block *candidate = (Block *)(address - sizeof(Block));
         if ((uintptr_t)candidate < (uintptr_t)chunk->first ||
             block_size(candidate) < HM_MIN_BLOCK ||
-            (uintptr_t)candidate + block_size(candidate) >
-                (uintptr_t)chunk->epilogue) return NULL;
+            block_size(candidate) >
+                (size_t)((char *)chunk->epilogue - (char *)candidate))
+            return NULL;
         if (candidate->requested > block_size(candidate) - sizeof(Block))
             return NULL;
         Block *next = next_block(candidate);
@@ -416,7 +424,19 @@ static int free_locked(void *ptr)
     return 1;
 }
 
-static int check_locked(void)
+static int fail_check(CheckFailure *failure, int code, const void *address,
+                      size_t expected, size_t actual)
+{
+    if (failure != NULL) {
+        failure->code = code;
+        failure->address = address;
+        failure->expected = expected;
+        failure->actual = actual;
+    }
+    return code;
+}
+
+static int check_locked(CheckFailure *failure)
 {
     size_t heap_bytes = 0;
     size_t live_bytes = 0;
@@ -425,26 +445,36 @@ static int check_locked(void)
     size_t max_blocks = 0;
     for (Chunk *chunk = chunks; chunk != NULL; chunk = chunk->next) {
         if (chunk->mapping_size < HM_MIN_BLOCK + 2 * sizeof(Block) +
-                                      sizeof(Chunk)) return 1;
+                                      sizeof(Chunk))
+            return fail_check(failure, 1, chunk, HM_MIN_BLOCK +
+                              2 * sizeof(Block) + sizeof(Chunk),
+                              chunk->mapping_size);
         heap_bytes += chunk->mapping_size;
         size_t sum = 0;
         int previous_allocated = 1;
         for (Block *block = chunk->first; block < chunk->epilogue;) {
             size_t size = block_size(block);
             if (size < HM_MIN_BLOCK || size % HM_ALIGNMENT != 0 ||
-                (uintptr_t)block + size > (uintptr_t)chunk->epilogue)
-                return 2;
+                size > (size_t)((char *)chunk->epilogue - (char *)block))
+                return fail_check(failure, 2, block, HM_MIN_BLOCK, size);
             if (!!(block->word & HM_FLAG_PREV_ALLOC) != previous_allocated)
-                return 3;
+                return fail_check(failure, 3, block,
+                                  (size_t)previous_allocated,
+                                  (size_t)!!(block->word & HM_FLAG_PREV_ALLOC));
             if (is_allocated(block)) {
                 if (block->requested == 0 ||
-                    block->requested > size - sizeof(Block)) return 4;
+                    block->requested > size - sizeof(Block))
+                    return fail_check(failure, 4, block,
+                                      size - sizeof(Block), block->requested);
                 live_bytes += block->requested;
                 fragmented += size - sizeof(Block) - block->requested;
             } else {
                 if (!previous_allocated ||
                     *(size_t *)((char *)block + size - sizeof(size_t)) !=
-                        block->word) return 5;
+                        block->word)
+                    return fail_check(failure, 5, block, block->word,
+                                      *(size_t *)((char *)block + size -
+                                                  sizeof(size_t)));
                 ++physical_free;
             }
             previous_allocated = is_allocated(block);
@@ -456,7 +486,10 @@ static int check_locked(void)
             block_size(chunk->epilogue) != 0 ||
             !is_allocated(chunk->epilogue) ||
             !!(chunk->epilogue->word & HM_FLAG_PREV_ALLOC) !=
-                previous_allocated) return 6;
+                previous_allocated)
+            return fail_check(failure, 6, chunk->epilogue,
+                              (size_t)((char *)chunk->epilogue -
+                                       (char *)chunk->first), sum);
     }
     size_t listed_free = 0;
     uint64_t observed_bitmap = 0;
@@ -464,16 +497,20 @@ static int check_locked(void)
         Block *previous = NULL;
         for (Block *block = free_lists[cls]; block != NULL;) {
             if (++listed_free > max_blocks || !lookup_chunk_block(
-                    (char *)block + sizeof(Block))) return 7;
+                    (char *)block + sizeof(Block)))
+                return fail_check(failure, 7, block, max_blocks, listed_free);
             if (is_allocated(block) || size_class(block_size(block)) != cls ||
-                links(block)->prev != previous) return 8;
+                links(block)->prev != previous)
+                return fail_check(failure, 8, block,
+                                  (size_t)(uintptr_t)previous,
+                                  (size_t)(uintptr_t)links(block)->prev);
             observed_bitmap |= UINT64_C(1) << cls;
             previous = block;
             block = links(block)->next;
         }
     }
     if (listed_free != physical_free || observed_bitmap != free_bitmap)
-        return 9;
+        return fail_check(failure, 9, free_lists, physical_free, listed_free);
     size_t direct_count = 0;
     for (DirectMap *item = direct_maps; item != NULL; item = item->next) {
         if (++direct_count > stats.current_heap_bytes / HM_MIN_BLOCK ||
@@ -481,24 +518,31 @@ static int check_locked(void)
             (uintptr_t)item->payload < (uintptr_t)item->mapping +
                                             sizeof(DirectMap) + sizeof(Block) ||
             (uintptr_t)item->payload >=
-                (uintptr_t)item->mapping + item->mapping_size) return 10;
+                (uintptr_t)item->mapping + item->mapping_size)
+            return fail_check(failure, 10, item, item->alignment,
+                              (size_t)(uintptr_t)item->payload);
         Block *block = (Block *)((char *)item->payload - sizeof(Block));
         if (!is_allocated(block) || !(block->word & HM_FLAG_MMAP) ||
-            block->requested > block_size(block) - sizeof(Block)) return 11;
+            block->requested > block_size(block) - sizeof(Block))
+            return fail_check(failure, 11, block,
+                              block_size(block) - sizeof(Block),
+                              block->requested);
         heap_bytes += item->mapping_size;
         live_bytes += block->requested;
         fragmented += block_size(block) - sizeof(Block) - block->requested;
     }
     if (heap_bytes != stats.current_heap_bytes ||
         live_bytes != stats.current_live_bytes ||
-        fragmented != stats.internal_fragmentation_bytes) return 12;
+        fragmented != stats.internal_fragmentation_bytes)
+        return fail_check(failure, 12, &stats, stats.current_heap_bytes,
+                          heap_bytes);
     return 0;
 }
 
 static void debug_check(void)
 {
 #if HM_DEBUG
-    if (++debug_operations % HM_DEBUG_STRIDE == 0 && check_locked() != 0) {
+    if (++debug_operations % HM_DEBUG_STRIDE == 0 && check_locked(NULL) != 0) {
         static const char message[] = "HyperMalloc: heap invariant failure\n";
         (void)write(STDERR_FILENO, message, sizeof(message) - 1);
         abort();
@@ -697,8 +741,53 @@ size_t hm_usable_size(void *ptr)
 int hm_check_heap(void)
 {
     lock_heap();
-    int result = check_locked();
+    int result = check_locked(NULL);
     unlock_heap();
+    return result;
+}
+
+static size_t append_text(char *buffer, size_t position, const char *value)
+{
+    while (*value != '\0' && position < 159) buffer[position++] = *value++;
+    return position;
+}
+
+static size_t append_hex(char *buffer, size_t position, size_t value)
+{
+    static const char digits[] = "0123456789abcdef";
+    position = append_text(buffer, position, "0x");
+    int started = 0;
+    for (int shift = (int)(sizeof(size_t) * 8) - 4; shift >= 0; shift -= 4) {
+        size_t nibble = (value >> shift) & 15;
+        if (nibble != 0 || started || shift == 0) {
+            if (position < 159) buffer[position++] = digits[nibble];
+            started = 1;
+        }
+    }
+    return position;
+}
+
+int hm_check_heap_verbose(void)
+{
+    CheckFailure failure = {0};
+    lock_heap();
+    int result = check_locked(&failure);
+    unlock_heap();
+    if (result != 0) {
+        char buffer[160];
+        size_t length = append_text(buffer, 0, "HyperMalloc checker code=");
+        length = append_hex(buffer, length, (size_t)failure.code);
+        length = append_text(buffer, length, " address=");
+        length = append_hex(buffer, length,
+                            (size_t)(uintptr_t)failure.address);
+        length = append_text(buffer, length, " expected=");
+        length = append_hex(buffer, length, failure.expected);
+        length = append_text(buffer, length, " actual=");
+        length = append_hex(buffer, length, failure.actual);
+        buffer[length++] = '\n';
+        ssize_t written = write(STDERR_FILENO, buffer, length);
+        (void)written;
+    }
     return result;
 }
 

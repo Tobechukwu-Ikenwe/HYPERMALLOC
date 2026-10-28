@@ -42,6 +42,9 @@ void *hm_memalign(size_t alignment, size_t size);
 size_t hm_usable_size(void *ptr);
 /* Return zero if all heap invariants hold, nonzero otherwise. */
 int hm_check_heap(void);
+/* As hm_check_heap, but write the first failure's code, address, expected and
+ * actual values to standard error using write(2). */
+int hm_check_heap_verbose(void);
 /* Copy allocator counters to out. NULL is ignored. With HM_STATS=0, counter
  * fields are zero; current memory accounting still remains available. */
 void hm_get_stats(hm_stats *out);

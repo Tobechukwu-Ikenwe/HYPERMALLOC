@@ -23,6 +23,7 @@ int main(void)
     size_t original_header = *header;
     *header ^= UINT64_C(0x10);
     REQUIRE(hm_check_heap() != 0);
+    REQUIRE(hm_check_heap_verbose() != 0);
     *header = original_header;
     REQUIRE(hm_check_heap() == 0);
 
