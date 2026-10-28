@@ -123,3 +123,22 @@ add_test(NAME core COMMAND test_core)
 add_executable(test_checker tests/test_checker.c)
 target_link_libraries(test_checker PRIVATE hypermalloc)
 add_test(NAME checker COMMAND test_checker)
+
+add_executable(test_threads tests/test_threads.c)
+target_link_libraries(test_threads PRIVATE hypermalloc Threads::Threads)
+add_test(NAME threads COMMAND test_threads)
+
+add_executable(test_invalid tests/test_invalid.c)
+target_compile_definitions(test_invalid PRIVATE HM_DEBUG=$<BOOL:${HM_DEBUG}>)
+target_link_libraries(test_invalid PRIVATE hypermalloc)
+add_test(NAME invalid COMMAND test_invalid)
+
+add_executable(test_size_classes tests/test_size_classes.c)
+target_include_directories(test_size_classes PRIVATE include)
+target_compile_definitions(test_size_classes PRIVATE
+    HM_DEBUG=$<BOOL:${HM_DEBUG}>
+    HM_THREADSAFE=$<BOOL:${HM_THREADSAFE}>
+    HM_STATS=$<BOOL:${HM_STATS}>
+)
+target_link_libraries(test_size_classes PRIVATE Threads::Threads)
+add_test(NAME size_classes COMMAND test_size_classes)
