@@ -10,7 +10,6 @@
 #include <string.h>
 
 #include <errno.h>
-#include <stdio.h>
 
 
 /*
@@ -50,6 +49,10 @@ static int expand_block(BlockHeader *block, size_t new_size)
     // Add consecutive free blocks until we have enough space.
     while (next != NULL && next->free == 1) {
 
+        if (next->previous == NULL ||
+            (char *)(next->previous + 1) + next->previous->size != (char *)next)
+            break;
+
         available += sizeof(BlockHeader) + next->size;
 
         if (available >= required) {
@@ -68,6 +71,9 @@ static int expand_block(BlockHeader *block, size_t new_size)
     next = block->next;
 
     while (block->size < new_size) {
+
+        if (next == NULL || (char *)(block + 1) + block->size != (char *)next)
+            return 0;
 
         // Save the block after the one we're about to remove.
         BlockHeader *after = next->next;
@@ -93,14 +99,11 @@ static int expand_block(BlockHeader *block, size_t new_size)
         next = after;
     }
 
-    // Set the block to exactly the requested size.
-    block->size = new_size;
-
     return 1;
 }
 
 
-void *hyper_realloc(void *old_ptr, size_t new_size)
+static void *hyper_realloc_impl(void *old_ptr, size_t new_size)
 {
     // realloc(NULL, size) behaves like malloc(size).
     if (old_ptr == NULL) {
@@ -113,26 +116,49 @@ void *hyper_realloc(void *old_ptr, size_t new_size)
         return NULL;
     }
 
+    const size_t alignment = _Alignof(max_align_t);
+    if (new_size > SIZE_MAX - (alignment - 1)) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    new_size = (new_size + alignment - 1) & ~(alignment - 1);
+    if (new_size > SIZE_MAX - sizeof(BlockHeader)) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
     // Find the block header belonging to the user's pointer.
     BlockHeader *block = find_block(old_ptr);
 
     // Reject pointers that do not belong to HyperMalloc.
     if (block == NULL) {
         errno = EINVAL;
-        perror("hyper_realloc");
         return NULL;
     }
 
     // Reject a block that has already been freed.
     if (block->free == 1) {
         errno = EINVAL;
-        perror("hyper_realloc");
         return NULL;
     }
 
     // If the requested size is smaller or equal,
     // the existing allocation is already large enough.
-    if (new_size <= block->size) {
+    if (new_size < block->size) {
+        if (block->size - new_size >= sizeof(BlockHeader) + alignment) {
+            split_block(block, new_size);
+            /* split_block has inserted the new free tail. Merge that tail
+             * with an already-free following block, never with the live
+             * block being resized. */
+            BlockHeader *tail = block->next;
+            remove_from_free_list(tail);
+            while (coalesce_next(tail)) { }
+            insert_into_free_list(tail);
+        }
+        return old_ptr;
+    }
+
+    if (new_size == block->size) {
         return old_ptr;
     }
 
@@ -158,4 +184,12 @@ void *hyper_realloc(void *old_ptr, size_t new_size)
 
     // Give the caller the new allocation.
     return new_ptr;
+}
+
+void *hyper_realloc(void *ptr, size_t size)
+{
+    allocator_lock();
+    void *result = hyper_realloc_impl(ptr, size);
+    allocator_unlock();
+    return result;
 }
