@@ -7,8 +7,9 @@ direct mappings at 128 KiB or above. This preserves the repository's existing
 OS-memory choice and avoids `sbrk` coordination with another allocator.
 Alternative: use `sbrk` for small allocations; rejected because process-wide
 program break ownership is harder to reason about, especially with preload.
-Ordinary chunks remain mapped for reuse. Direct mappings are unmapped on free.
-Trimming is deferred until the checker, tests and preload path are stronger.
+One empty ordinary chunk remains mapped for reuse; further empty chunks are
+unmapped. Direct mappings are unmapped on free. `test_trim` verifies that
+releasing ordinary chunks updates mapped-byte accounting.
 
 ## Free-only footers and immediate coalescing
 
@@ -26,8 +27,7 @@ Fine 16-byte classes cover blocks through 256 bytes. Quarter-power classes
 cover larger blocks. This is a conservative compromise between exact-size
 lists (many heads) and the original power-of-two classes (longer searches).
 The free-list bitmap and `ctz` skip empty classes. LIFO insertion is retained
-from the original implementation; address-ordered insertion is a candidate
-for the required optimization experiment, after reproducible benchmarks exist.
+from the original implementation.
 
 ## Direct-map lookup experiment
 
@@ -44,8 +44,9 @@ A statically initialized mutex protects all allocator state. It is available
 before constructors run and does not require a heap allocation for setup.
 Alternative: per-thread arenas or caches; deferred because their ownership,
 cross-thread free, and fork behavior require much more validation. The global
-lock makes the core correct under threads but limits throughput under
-contention. Fork handlers for the preload build are still outstanding.
+lock serializes allocator operations and limits throughput under contention.
+`pthread_atfork` acquires it before fork and releases it in the parent and
+child, preventing the child from inheriting a locked mutex.
 
 ## Invalid-pointer handling
 

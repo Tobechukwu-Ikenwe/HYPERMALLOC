@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+project(HyperMallocConsumer LANGUAGES C)
+find_package(HyperMalloc 0.1 CONFIG REQUIRED)
+add_executable(hm_consumer main.c)
+target_link_libraries(hm_consumer PRIVATE HyperMalloc::hypermalloc)

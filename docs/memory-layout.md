@@ -58,8 +58,8 @@ mapping base
 The initial free block occupies the span between the prologue and epilogue.
 The epilogue has size zero. All ordinary blocks in a chunk are contiguous;
 heap walking must land exactly on the epilogue. The last free block is the
-heap top, so realloc can grow into it if sufficient space remains. Chunks
-stay mapped for reuse; there is currently no trim operation.
+heap top, so realloc can grow into it if sufficient space remains. The allocator
+keeps one fully free chunk for reuse and unmaps additional empty chunks.
 
 Requests of at least 128 KiB, or alignments above 16 bytes, get a direct
 mapping. The `DirectMap` descriptor lives at its mapping start. The payload
@@ -77,8 +77,8 @@ divide each doubling interval into quarters: 320, 384, 448, 512; 640, 768,
 records which of the 64 lists are nonempty. Search uses `ctz` to find the
 first eligible nonempty class, then first-fit within a class. Each list uses
 LIFO insertion. `hm_check_heap` verifies class membership, list links,
-bitmap agreement and free-block counts. Class-boundary unit tests are still
-needed.
+bitmap agreement and free-block counts. `test_size_classes` covers class
+boundaries.
 
 ## Accounting
 

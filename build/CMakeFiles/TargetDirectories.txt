@@ -1,4 +1,0 @@
-/home/tobe/projects/HyperMalloc/build/CMakeFiles/hypermalloc.dir
-/home/tobe/projects/HyperMalloc/build/CMakeFiles/full_benchmark.dir
-/home/tobe/projects/HyperMalloc/build/CMakeFiles/edit_cache.dir
-/home/tobe/projects/HyperMalloc/build/CMakeFiles/rebuild_cache.dir

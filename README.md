@@ -3,8 +3,8 @@
 HyperMalloc is an experimental Linux allocator with a static `hm_*` API and
 a shared library for `LD_PRELOAD`. It uses segregated free lists, boundary
 tags, 256 KiB chunks, and direct mappings for requests at least 128 KiB or
-alignment above 16 bytes. Ordinary chunks stay mapped for reuse; direct maps
-are unmapped on free.
+alignment above 16 bytes. One empty ordinary chunk is kept for reuse; other
+empty chunks and direct maps are unmapped on free.
 
 ## Build and test
 
@@ -13,6 +13,10 @@ cmake --preset release
 cmake --build out/release -j 4
 ctest --test-dir out/release --output-on-failure
 ```
+
+Install with `cmake --install out/release --prefix /your/prefix`. Consumer CMake
+projects can use `find_package(HyperMalloc 0.1 CONFIG REQUIRED)` and link
+`HyperMalloc::hypermalloc`. The install includes the preload shared library.
 
 `scripts/check.sh` accepts `release`, `debug`, `asan`, or `tsan`. See
 [docs/DEVELOPING.md](docs/DEVELOPING.md) for fuzzing, preload, and benchmark

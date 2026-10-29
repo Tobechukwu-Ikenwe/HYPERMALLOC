@@ -1,1 +1,0 @@
-/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/full_benchmark.dir/link.d CMakeFiles/full_benchmark.dir/benchmarks/full_benchmark.c.o -o full_benchmark  libhypermalloc.a

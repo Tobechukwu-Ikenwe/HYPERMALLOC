@@ -12,11 +12,13 @@ Run `scripts/fuzz-quick.sh` for 100,000 seeded operations or
 deterministic operations against HyperMalloc and libc, comparing contents,
 alignment, overlap, and heap invariants. `--file tests/corpus/basic.txt`
 replays the checked-in byte corpus. The optional Clang libFuzzer target uses
-`-DHM_LIBFUZZER=ON` with a Clang build.
+`-DHM_LIBFUZZER=ON` with a Clang build. Copy `tests/corpus/` to `out/fuzz-corpus/`
+before running libFuzzer so generated inputs stay out of the source tree.
 
 Run `python3 scripts/bench.py` to rebuild Release and collect seven matched
 runs per workload. The script writes raw CSV and a median SVG chart to
-`benchmarks/results/`. It alternates allocator order and checks that each pair
+`out/benchmarks/` by default; pass `--output-dir` to choose another path. It
+alternates allocator order and checks that each pair
 produces the same checksum. Timings use `CLOCK_MONOTONIC`; see
 `benchmarks/bench_compare.c` for operation generation and memory touches.
 
@@ -26,7 +28,9 @@ program args`. This is an experimental Linux preload build. The test suite
 checks `malloc`, `free`, `calloc`, `realloc`, aligned allocation, and usable
 size through the shared object.
 
-The current allocator does not release ordinary chunks or implement fork
-handlers. The global mutex limits multithreaded scalability. Invalid-pointer
-checks are best effort and not a memory-safety boundary. Do not use the
-preload build with setuid programs or as a general production allocator.
+The allocator retains one empty ordinary chunk. Its global mutex limits
+multithreaded scalability. It registers `pthread_atfork` handlers to
+prevent a child process from inheriting a locked allocator mutex; the static
+and preload fork tests exercise this with a concurrent allocating thread.
+Invalid-pointer checks are best effort and not a memory-safety boundary. The
+preload build is not supported for setuid programs.

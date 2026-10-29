@@ -22,3 +22,10 @@ jobs:
       - name: Seeded fuzz soak
         if: matrix.preset == 'release'
         run: out/release/fuzz_ops --seed 1 100 10000
+      - name: Installed consumer
+        if: matrix.preset == 'release'
+        run: |
+          cmake --install out/release --prefix "$RUNNER_TEMP/hm-install"
+          cmake -S tests/consumer -B out/consumer -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/hm-install"
+          cmake --build out/consumer
+          out/consumer/hm_consumer

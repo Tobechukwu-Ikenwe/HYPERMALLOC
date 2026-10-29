@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/tobe/projects/HyperMalloc/build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

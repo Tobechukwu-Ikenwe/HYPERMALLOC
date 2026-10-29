@@ -73,7 +73,10 @@ static int run_ops(const uint8_t *data, size_t length)
                     slot->ptr = NULL;
                     slot->reference = NULL;
                     slot->size = 0;
-                } else if (changed != NULL) {
+                } else if (changed == NULL) {
+                    failure = 12;
+                    break;
+                } else {
                     unsigned char *reference = realloc(slot->reference, size);
                     slot->ptr = changed;
                     if (reference != NULL) slot->reference = reference;

@@ -9,9 +9,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#ifndef HM_THREADSAFE
-#define HM_THREADSAFE 1
-#endif
 #ifndef HM_DEBUG
 #define HM_DEBUG 0
 #endif
@@ -51,6 +48,12 @@ typedef struct Chunk {
     Block *epilogue;
 } Chunk;
 
+_Static_assert(sizeof(void *) == 8, "HyperMalloc requires a 64-bit ABI");
+_Static_assert(sizeof(Block) == 16, "unexpected block header layout");
+_Static_assert(sizeof(Chunk) == 32, "unexpected chunk layout");
+_Static_assert(_Alignof(max_align_t) <= HM_ALIGNMENT,
+               "malloc alignment exceeds allocator alignment");
+
 typedef struct DirectMap {
     struct DirectMap *next;
     struct DirectMap *prev;
@@ -77,22 +80,22 @@ static hm_stats stats;
 #if HM_DEBUG
 static uint64_t debug_operations;
 #endif
-#if HM_THREADSAFE
 static pthread_mutex_t heap_mutex = PTHREAD_MUTEX_INITIALIZER;
-#endif
 
 static void lock_heap(void)
 {
-#if HM_THREADSAFE
     (void)pthread_mutex_lock(&heap_mutex);
-#endif
 }
 
 static void unlock_heap(void)
 {
-#if HM_THREADSAFE
     (void)pthread_mutex_unlock(&heap_mutex);
-#endif
+}
+
+/* The parent must not fork while another thread owns allocator metadata. */
+__attribute__((constructor)) static void register_fork_handlers(void)
+{
+    (void)pthread_atfork(lock_heap, unlock_heap, unlock_heap);
 }
 
 static void invalid_use(void)
@@ -412,6 +415,26 @@ static void merge_and_insert(Block *block)
     block->word = total | prev_flag;
     write_footer(block);
     next_block(block)->word &= ~(size_t)HM_FLAG_PREV_ALLOC;
+
+    /* Keep one fully free chunk for reuse, release further empty chunks. */
+    if (total >= HM_CHUNK_BYTES - sizeof(Chunk) - 2 * sizeof(Block)) {
+        Chunk **owner = &chunks;
+        while (*owner != NULL && (*owner)->first != block)
+            owner = &(*owner)->next;
+        if (*owner != NULL && next_block(block) == (*owner)->epilogue) {
+            for (Chunk *other = chunks; other != NULL; other = other->next) {
+                if (other != *owner && !is_allocated(other->first) &&
+                    next_block(other->first) == other->epilogue) {
+                    Chunk *released = *owner;
+                    size_t bytes = released->mapping_size;
+                    *owner = released->next;
+                    stats.current_heap_bytes -= bytes;
+                    (void)munmap(released, bytes);
+                    return;
+                }
+            }
+        }
+    }
     insert_free(block);
 }
 

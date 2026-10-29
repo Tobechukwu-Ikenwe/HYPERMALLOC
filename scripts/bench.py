@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run matched allocator workloads and write raw results plus a median plot."""
 import csv
+import argparse
 import os
 import platform
 import statistics
@@ -9,7 +10,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PROGRAM = ROOT / "out/release/bench_compare"
-RESULTS = ROOT / "benchmarks/results"
 WORKLOADS = {"small": 100000, "mixed": 100000, "large": 20000}
 REPEATS = 7
 
@@ -23,16 +23,26 @@ def run(allocator, workload, operations):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "out/benchmarks")
+    args = parser.parse_args()
+    results = args.output_dir.resolve()
     subprocess.run(["cmake", "--preset", "release"], cwd=ROOT, check=True)
     subprocess.run(["cmake", "--build", "out/release", "-j", "4"],
                    cwd=ROOT, check=True)
     commit = subprocess.check_output(
         ["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True
     ).strip()
+    dirty = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=ROOT, text=True
+    )
+    if dirty:
+        commit += "-dirty"
     cpu = next((line.split(":", 1)[1].strip()
                 for line in Path("/proc/cpuinfo").read_text().splitlines()
                 if line.startswith("model name")), platform.processor())
-    RESULTS.mkdir(parents=True, exist_ok=True)
+    results.mkdir(parents=True, exist_ok=True)
     rows = []
     for workload, operations in WORKLOADS.items():
         for repeat in range(REPEATS):
@@ -48,7 +58,7 @@ def main():
                              "seconds": elapsed, "checksum": checksum})
             if pair["libc"] != pair["hm"]:
                 raise RuntimeError(f"checksum mismatch for {workload} repeat {repeat}")
-    path = RESULTS / "current.csv"
+    path = results / "current.csv"
     with path.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=rows[0].keys(),
                                 lineterminator="\n")
@@ -73,7 +83,7 @@ def main():
     ax.set_title("Matched allocator workloads (7 runs each)")
     ax.legend()
     fig.tight_layout()
-    svg_path = RESULTS / "current.svg"
+    svg_path = results / "current.svg"
     fig.savefig(svg_path)
     svg_path.write_text("\n".join(line.rstrip() for line in
                                   svg_path.read_text().splitlines()) + "\n")
