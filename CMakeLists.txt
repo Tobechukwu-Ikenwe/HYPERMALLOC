@@ -48,6 +48,16 @@ add_library(hypermalloc STATIC
     src/core.c
 )
 
+add_library(hypermalloc_preload SHARED src/core.c src/preload.c)
+set_target_properties(hypermalloc_preload PROPERTIES OUTPUT_NAME hypermalloc_preload)
+target_compile_definitions(hypermalloc_preload PRIVATE
+    HM_DEBUG=$<BOOL:${HM_DEBUG}>
+    HM_THREADSAFE=$<BOOL:${HM_THREADSAFE}>
+    HM_STATS=$<BOOL:${HM_STATS}>
+)
+target_link_libraries(hypermalloc_preload PRIVATE project_warnings Threads::Threads)
+target_include_directories(hypermalloc_preload PRIVATE include)
+
 target_compile_definitions(hypermalloc PRIVATE
     HM_DEBUG=$<BOOL:${HM_DEBUG}>
     HM_THREADSAFE=$<BOOL:${HM_THREADSAFE}>
@@ -112,6 +122,9 @@ target_link_libraries(benchmark_reuse_mixed PRIVATE
     hypermalloc
 )
 
+add_executable(bench_compare benchmarks/bench_compare.c)
+target_link_libraries(bench_compare PRIVATE hypermalloc project_warnings)
+
 add_executable(test_realloc_shrink tests/test_realloc_shrink.c)
 target_link_libraries(test_realloc_shrink PRIVATE hypermalloc)
 add_test(NAME realloc_shrink COMMAND test_realloc_shrink)
@@ -142,3 +155,28 @@ target_compile_definitions(test_size_classes PRIVATE
 )
 target_link_libraries(test_size_classes PRIVATE Threads::Threads)
 add_test(NAME size_classes COMMAND test_size_classes)
+
+add_executable(fuzz_ops tests/fuzz_ops.c)
+target_compile_definitions(fuzz_ops PRIVATE HM_FUZZ_STANDALONE=1)
+target_link_libraries(fuzz_ops PRIVATE hypermalloc)
+add_test(NAME fuzz_quick COMMAND fuzz_ops --seed 1 2 1000)
+add_test(NAME fuzz_corpus COMMAND fuzz_ops --file
+    ${PROJECT_SOURCE_DIR}/tests/corpus/basic.txt)
+
+add_executable(test_preload tests/test_preload.c)
+target_link_libraries(test_preload PRIVATE project_warnings)
+if(HM_SANITIZE STREQUAL "")
+    add_test(NAME preload COMMAND ${CMAKE_COMMAND} -E env
+        LD_PRELOAD=$<TARGET_FILE:hypermalloc_preload> $<TARGET_FILE:test_preload>)
+endif()
+
+option(HM_LIBFUZZER "Build a libFuzzer target when using Clang" OFF)
+if(HM_LIBFUZZER)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "HM_LIBFUZZER requires Clang")
+    endif()
+    add_executable(fuzz_ops_libfuzzer tests/fuzz_ops.c)
+    target_link_libraries(fuzz_ops_libfuzzer PRIVATE hypermalloc)
+    target_compile_options(fuzz_ops_libfuzzer PRIVATE -fsanitize=fuzzer)
+    target_link_options(fuzz_ops_libfuzzer PRIVATE -fsanitize=fuzzer)
+endif()

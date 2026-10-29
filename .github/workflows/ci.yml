@@ -1,0 +1,24 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [release, debug, asan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build out/${{ matrix.preset }} -j 2
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: ctest --test-dir out/${{ matrix.preset }} --output-on-failure
+      - name: Seeded fuzz soak
+        if: matrix.preset == 'release'
+        run: out/release/fuzz_ops --seed 1 100 10000

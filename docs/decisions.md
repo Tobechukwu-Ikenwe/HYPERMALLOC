@@ -29,6 +29,15 @@ The free-list bitmap and `ctz` skip empty classes. LIFO insertion is retained
 from the original implementation; address-ordered insertion is a candidate
 for the required optimization experiment, after reproducible benchmarks exist.
 
+## Direct-map lookup experiment
+
+The first implementation searched a single direct-map list for every free,
+realloc, and usable-size query. The large-allocation benchmark exposed this
+linear lookup cost. A fixed 1,024-bucket pointer hash now finds direct maps,
+while doubly linked registry nodes allow constant-time unlinking. The full
+registry remains available to the checker. The before and after raw runs are
+in `benchmarks/results/`; see `BENCHMARK_RESULTS.md` for medians and limits.
+
 ## Global pthread mutex
 
 A statically initialized mutex protects all allocator state. It is available

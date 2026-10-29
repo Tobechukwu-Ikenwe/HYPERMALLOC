@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug with heap checker",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "HM_DEBUG": "ON" }
+    },
+    {
+      "name": "asan",
+      "displayName": "Address and undefined behavior sanitizers",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "HM_SANITIZE": "address" }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Thread sanitizer",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "HM_SANITIZE": "thread" }
+    },
+    {
+      "name": "valgrind",
+      "displayName": "Valgrind-friendly",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_C_FLAGS": "-O1 -g" }
+    }
+  ]
+}

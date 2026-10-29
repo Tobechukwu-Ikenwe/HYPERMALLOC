@@ -1,0 +1,7 @@
+/out/
+/build-*/
+*.gcda
+*.gcno
+*.profraw
+/core
+/core.*

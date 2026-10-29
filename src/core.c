@@ -28,6 +28,7 @@ enum {
     HM_CHUNK_BYTES = 256 * 1024,
     HM_LARGE_THRESHOLD = 128 * 1024,
     HM_CLASS_COUNT = 64,
+    HM_DIRECT_BUCKETS = 1024,
     HM_FLAG_ALLOC = 1,
     HM_FLAG_PREV_ALLOC = 2,
     HM_FLAG_MMAP = 4
@@ -52,6 +53,8 @@ typedef struct Chunk {
 
 typedef struct DirectMap {
     struct DirectMap *next;
+    struct DirectMap *prev;
+    struct DirectMap *hash_next;
     void *mapping;
     size_t mapping_size;
     void *payload;
@@ -67,6 +70,7 @@ typedef struct CheckFailure {
 
 static Chunk *chunks;
 static DirectMap *direct_maps;
+static DirectMap *direct_buckets[HM_DIRECT_BUCKETS];
 static Block *free_lists[HM_CLASS_COUNT];
 static uint64_t free_bitmap;
 static hm_stats stats;
@@ -221,6 +225,14 @@ static void account_free(Block *block)
         block_size(block) - sizeof(Block) - block->requested;
 }
 
+static size_t direct_bucket(const void *payload)
+{
+    uintptr_t value = (uintptr_t)payload >> 4;
+    value ^= value >> 17;
+    value ^= value >> 9;
+    return (size_t)(value & (HM_DIRECT_BUCKETS - 1));
+}
+
 static Block *add_chunk(size_t needed)
 {
     size_t bytes;
@@ -303,8 +315,13 @@ static void *allocate_direct(size_t requested, size_t alignment)
     item->mapping_size = bytes;
     item->payload = (void *)aligned;
     item->alignment = alignment;
+    item->prev = NULL;
     item->next = direct_maps;
+    if (direct_maps != NULL) direct_maps->prev = item;
     direct_maps = item;
+    size_t bucket = direct_bucket(item->payload);
+    item->hash_next = direct_buckets[bucket];
+    direct_buckets[bucket] = item;
     account_mapping_add(bytes);
     account_alloc(block);
     return item->payload;
@@ -331,13 +348,12 @@ static void *malloc_locked(size_t requested, size_t alignment)
 
 static DirectMap *lookup_direct(void *ptr, DirectMap **previous)
 {
-    DirectMap *prev = NULL;
-    for (DirectMap *item = direct_maps; item != NULL; item = item->next) {
+    for (DirectMap *item = direct_buckets[direct_bucket(ptr)]; item != NULL;
+         item = item->hash_next) {
         if (item->payload == ptr) {
-            if (previous != NULL) *previous = prev;
+            if (previous != NULL) *previous = item->prev;
             return item;
         }
-        prev = item;
     }
     return NULL;
 }
@@ -407,8 +423,13 @@ static int free_locked(void *ptr)
     if (direct != NULL) {
         Block *block = (Block *)((char *)ptr - sizeof(Block));
         account_free(block);
+        size_t bucket = direct_bucket(ptr);
+        DirectMap **link = &direct_buckets[bucket];
+        while (*link != direct) link = &(*link)->hash_next;
+        *link = direct->hash_next;
         if (previous != NULL) previous->next = direct->next;
         else direct_maps = direct->next;
+        if (direct->next != NULL) direct->next->prev = previous;
         stats.current_heap_bytes -= direct->mapping_size;
         (void)munmap(direct->mapping, direct->mapping_size);
         return 1;
@@ -514,6 +535,7 @@ static int check_locked(CheckFailure *failure)
     size_t direct_count = 0;
     for (DirectMap *item = direct_maps; item != NULL; item = item->next) {
         if (++direct_count > stats.current_heap_bytes / HM_MIN_BLOCK ||
+            lookup_direct(item->payload, NULL) != item ||
             (uintptr_t)item->payload % item->alignment != 0 ||
             (uintptr_t)item->payload < (uintptr_t)item->mapping +
                                             sizeof(DirectMap) + sizeof(Block) ||
