@@ -16,6 +16,10 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(HM_DEBUG "Check heap invariants after public operations" OFF)
 option(HM_STATS "Track allocator operation counters" ON)
+set(HM_ARENAS 8 CACHE STRING "Number of independent allocator arenas (1-8)")
+if(NOT HM_ARENAS MATCHES "^[1-8]$")
+    message(FATAL_ERROR "HM_ARENAS must be an integer from 1 to 8")
+endif()
 set(HM_SANITIZE "" CACHE STRING "Sanitizer: address, undefined, or thread")
 set_property(CACHE HM_SANITIZE PROPERTY STRINGS "" address undefined thread)
 if(HM_SANITIZE STREQUAL "address")
@@ -55,6 +59,7 @@ set_target_properties(hypermalloc_preload PROPERTIES
 target_compile_definitions(hypermalloc_preload PRIVATE
     HM_DEBUG=$<BOOL:${HM_DEBUG}>
     HM_STATS=$<BOOL:${HM_STATS}>
+    HM_ACTIVE_ARENAS=${HM_ARENAS}
 )
 target_link_libraries(hypermalloc_preload PRIVATE Threads::Threads)
 hm_enable_warnings(hypermalloc_preload)
@@ -63,6 +68,7 @@ target_include_directories(hypermalloc_preload PRIVATE include)
 target_compile_definitions(hypermalloc PRIVATE
     HM_DEBUG=$<BOOL:${HM_DEBUG}>
     HM_STATS=$<BOOL:${HM_STATS}>
+    HM_ACTIVE_ARENAS=${HM_ARENAS}
 )
 
 # Apply shared compiler configuration.
@@ -104,9 +110,25 @@ add_executable(bench_compare benchmarks/bench_compare.c)
 target_link_libraries(bench_compare PRIVATE hypermalloc)
 hm_enable_warnings(bench_compare)
 
+add_executable(bench_threads benchmarks/bench_threads.c)
+target_link_libraries(bench_threads PRIVATE hypermalloc Threads::Threads)
+hm_enable_warnings(bench_threads)
+
+add_executable(bench_direct_resize benchmarks/bench_direct_resize.c)
+target_link_libraries(bench_direct_resize PRIVATE hypermalloc)
+hm_enable_warnings(bench_direct_resize)
+
+add_executable(bench_workloads benchmarks/bench_workloads.c)
+target_link_libraries(bench_workloads PRIVATE hypermalloc)
+hm_enable_warnings(bench_workloads)
+
 add_executable(test_realloc_shrink tests/test_realloc_shrink.c)
 target_link_libraries(test_realloc_shrink PRIVATE hypermalloc)
 add_test(NAME realloc_shrink COMMAND test_realloc_shrink)
+
+add_executable(test_direct_shrink tests/test_direct_shrink.c)
+target_link_libraries(test_direct_shrink PRIVATE hypermalloc)
+add_test(NAME direct_shrink COMMAND test_direct_shrink)
 
 add_executable(test_core tests/test_core.c)
 target_link_libraries(test_core PRIVATE hypermalloc)
@@ -139,6 +161,7 @@ target_include_directories(test_size_classes PRIVATE include)
 target_compile_definitions(test_size_classes PRIVATE
     HM_DEBUG=$<BOOL:${HM_DEBUG}>
     HM_STATS=$<BOOL:${HM_STATS}>
+    HM_ACTIVE_ARENAS=${HM_ARENAS}
 )
 target_link_libraries(test_size_classes PRIVATE Threads::Threads)
 add_test(NAME size_classes COMMAND test_size_classes)

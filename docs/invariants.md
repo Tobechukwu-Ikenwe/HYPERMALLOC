@@ -16,13 +16,15 @@ Reproduce the corruption checks with `ctest --test-dir build -R checker
 | Every free-list node is a free chunk block in its size class, with matching backward link. | `insert_free`, `remove_free` | `check_locked` bounded list walk |
 | The free-list bitmap agrees with nonempty lists and free-list counts match physical free counts. | `insert_free`, `remove_free` | `check_locked` bitmap/count comparison |
 | Live and mapped byte accounting agrees with physical blocks and direct maps. | `account_alloc`, `account_free`, mapping paths, realloc update | `check_locked` accounting comparison |
+| Process-wide atomic live and mapped totals agree with the sum of arena totals. | accounting helpers and mapping paths | `check_all_locked` aggregate comparison |
 | Direct-map payloads have their recorded alignment and live map flag. | `allocate_direct` | `check_locked` direct-map walk |
 
 `test_checker` deliberately changes a live block's header, a free block's
 footer, and a free-list back pointer, checks that each mutation is detected,
 then restores the original value. The checker is also called periodically by
-`test_core` and after each public operation when `HM_DEBUG=ON` (or at the
-configured `HM_DEBUG_STRIDE`).
+`test_core`. With `HM_DEBUG=ON`, mutating operations check their selected
+arena at the configured `HM_DEBUG_STRIDE`; explicit `hm_check_heap()` checks
+every arena and the process-wide accounting totals.
 
 The checker is diagnostic, not a hardened memory-safety boundary. A severely
 corrupt pointer in the direct-map registry may make any heap walk unsafe. The

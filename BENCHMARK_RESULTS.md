@@ -1,4 +1,7 @@
-# Reproducible benchmark results (2026-10-28)
+# Historical single-thread benchmark results (2026-10-28)
+
+These measurements predate the independent-arena change. See
+`optimizations.md` for the current concurrency comparison.
 
 Run `python3 scripts/bench.py` from the repository root to rebuild and repeat
 the comparison. The script alternates allocator order, runs each matched

@@ -7,9 +7,10 @@ direct mappings at 128 KiB or above. This preserves the repository's existing
 OS-memory choice and avoids `sbrk` coordination with another allocator.
 Alternative: use `sbrk` for small allocations; rejected because process-wide
 program break ownership is harder to reason about, especially with preload.
-One empty ordinary chunk remains mapped for reuse; further empty chunks are
-unmapped. Direct mappings are unmapped on free. `test_trim` verifies that
-releasing ordinary chunks updates mapped-byte accounting.
+At most one empty ordinary chunk per active arena remains mapped for reuse;
+further empty chunks in that arena are unmapped. Direct mappings are unmapped
+on free. `test_trim` verifies that releasing ordinary chunks updates mapped-byte
+accounting.
 
 ## Free-only footers and immediate coalescing
 
@@ -38,15 +39,16 @@ while doubly linked registry nodes allow constant-time unlinking. The full
 registry remains available to the checker. The before and after raw runs are
 in `benchmarks/results/`; see `BENCHMARK_RESULTS.md` for medians and limits.
 
-## Global pthread mutex
+## Independent arenas
 
-A statically initialized mutex protects all allocator state. It is available
-before constructors run and does not require a heap allocation for setup.
-Alternative: per-thread arenas or caches; deferred because their ownership,
-cross-thread free, and fork behavior require much more validation. The global
-lock serializes allocator operations and limits throughput under contention.
-`pthread_atfork` acquires it before fork and releases it in the parent and
-child, preventing the child from inheriting a locked mutex.
+Up to eight arenas each own chunks, direct maps, free lists, a bitmap, stats,
+and a statically initialized mutex. Threads choose a home arena once. Free,
+realloc, and usable-size queries probe the home arena first and then other
+arenas, so cross-thread frees remain valid. The heap checker, stats snapshot,
+and fork handlers lock every arena in a fixed order. This reduces contention
+for concurrent small and mixed allocations, at the cost of more retained
+empty chunks and a search when another thread owns a pointer. The benchmark,
+arena-count comparison, and limitations are in `optimizations.md`.
 
 ## Invalid-pointer handling
 
@@ -62,6 +64,5 @@ separate pointer index later.
 ## Zero-size allocation
 
 `hm_malloc(0)` returns a distinct, freeable minimum-sized allocation while
-it remains live. This is easier for drop-in use than returning NULL. The old
-`hyper_malloc(0)` wrapper retains its historical NULL behavior for existing
-clients. `hm_realloc(p,0)` frees and returns NULL.
+it remains live. This is easier for drop-in use than returning NULL.
+`hm_realloc(p,0)` frees and returns NULL.

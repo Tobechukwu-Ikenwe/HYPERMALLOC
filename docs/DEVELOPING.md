@@ -22,14 +22,21 @@ alternates allocator order and checks that each pair
 produces the same checksum. Timings use `CLOCK_MONOTONIC`; see
 `benchmarks/bench_compare.c` for operation generation and memory touches.
 
+For concurrency measurements, build Release and run
+`python3 scripts/bench-threads.py --output out/benchmarks/threads.csv`.
+This compares libc and HyperMalloc with 1, 2, 4, and 8 threads on small,
+mixed, direct-map, and cross-thread handoff workloads. `HM_ARENAS` configures 1-8 active arenas;
+the default is 8. See `optimizations.md` for recorded comparisons.
+
 `libhypermalloc_preload.so` wraps the common glibc allocation entry points.
 To exercise another program, use `LD_PRELOAD=out/release/libhypermalloc_preload.so
 program args`. This is an experimental Linux preload build. The test suite
 checks `malloc`, `free`, `calloc`, `realloc`, aligned allocation, and usable
 size through the shared object.
 
-The allocator retains one empty ordinary chunk. Its global mutex limits
-multithreaded scalability. It registers `pthread_atfork` handlers to
+Each active arena can retain one empty ordinary chunk. Separate arena mutexes
+let threads allocate concurrently when they use different arenas. It
+registers `pthread_atfork` handlers to lock every arena before fork and
 prevent a child process from inheriting a locked allocator mutex; the static
 and preload fork tests exercise this with a concurrent allocating thread.
 Invalid-pointer checks are best effort and not a memory-safety boundary. The

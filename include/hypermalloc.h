@@ -4,12 +4,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#ifdef __cplusplus
+#ifdef __cplusplus // lets c++ code link to these functions
 extern "C" {
 #endif
 
 typedef struct hm_stats {
-    size_t current_live_bytes;
+    size_t current_live_bytes;  //bytes r
     size_t peak_live_bytes;
     size_t current_heap_bytes;
     size_t peak_heap_bytes;
@@ -49,16 +49,7 @@ int hm_check_heap_verbose(void);
  * fields are zero; current memory accounting still remains available. */
 void hm_get_stats(hm_stats *out);
 
-void *hyper_malloc(size_t size);
-void *hyper_calloc(size_t count, size_t size);
-void hyper_free(void *ptr);
-void *hyper_realloc(void *ptr, size_t size);
-void *hyper_reallocarray(void *ptr, size_t count, size_t size);
-void *hyper_aligned_alloc(size_t alignment, size_t size);
-int hyper_posix_memalign(void **memptr, size_t alignment, size_t size);
-size_t hyper_malloc_usable_size(void *ptr);
-int check_heap(void);
 #ifdef __cplusplus
 }
 #endif
-#endif
+#endif /* HYPERMALLOC_H */

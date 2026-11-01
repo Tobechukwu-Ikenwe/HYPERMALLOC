@@ -1,0 +1,61 @@
+--- a/src/core.c
++++ b/src/core.c
+@@ -984,8 +984,9 @@
+ }
+ 
+ /* Resize while preserving min(old requested, new requested) bytes. An
+- * allocation failure leaves the old pointer live. Direct maps are moved;
+- * ordinary blocks first try to stay in place. */
++ * allocation failure leaves the old pointer live. Direct maps can stay in
++ * place while their mapped capacity suffices; ordinary blocks can split or
++ * absorb a free neighbor. */
+ void *hm_realloc(void *ptr, size_t size)
+ {
+     if (ptr == NULL) return hm_malloc(size);
+@@ -1020,6 +1021,46 @@
+         return NULL;
+     }
+     if (needed < HM_MIN_BLOCK) needed = HM_MIN_BLOCK;
++    if (direct != NULL && size <= old_capacity) {
++        /* The direct map already owns these bytes. On shrink, unmap complete
++         * trailing pages while preserving the descriptor, header, payload,
++         * and exact pointer recorded in its hash bucket. munmap may fail;
++         * that only prevents trimming, not the valid in-place resize. */
++        stats.internal_fragmentation_bytes -= old_capacity - old_requested;
++        if (size < old_requested) {
++            size_t used = (size_t)((uintptr_t)ptr -
++                                   (uintptr_t)direct->mapping) + size;
++            size_t keep_bytes;
++            if (align_size(used, (size_t)getpagesize(), &keep_bytes) &&
++                keep_bytes < direct->mapping_size) {
++                size_t released = direct->mapping_size - keep_bytes;
++                if (munmap((char *)direct->mapping + keep_bytes,
++                           released) == 0) {
++                    direct->mapping_size = keep_bytes;
++                    block->word = ((size_t)((char *)direct->mapping +
++                                           keep_bytes - (char *)block) &
++                                   ~(size_t)(HM_ALIGNMENT - 1)) |
++                                  HM_FLAG_ALLOC | HM_FLAG_PREV_ALLOC |
++                                  HM_FLAG_MMAP;
++                    stats.current_heap_bytes -= released;
++                    global_sub_mapping(released);
++                }
++            }
++        }
++        if (size >= old_requested) global_add_live(size - old_requested);
++        else global_sub_live(old_requested - size);
++        stats.current_live_bytes = stats.current_live_bytes - old_requested +
++                                   size;
++        if (stats.current_live_bytes > stats.peak_live_bytes)
++            stats.peak_live_bytes = stats.current_live_bytes;
++        block->requested = size;
++        stats.internal_fragmentation_bytes +=
++            block_size(block) - sizeof(Block) - size;
++        debug_check();
++        unlock_heap();
++        errno = saved_errno;
++        return ptr;
++    }
+     if (direct == NULL && size < HM_LARGE_THRESHOLD) {
+         /* Case 1: the current ordinary block already has enough capacity.
+          * Split a viable tail so future allocations can reuse it. */

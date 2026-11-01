@@ -1,0 +1,69 @@
+--- a/src/core.c
++++ b/src/core.c
+@@ -704,16 +704,13 @@
+     insert_free(block);
+ }
+ 
+-/* Return 1 when a NULL/valid pointer was handled, 0 for an invalid pointer.
+- * Direct maps are tried first because their payload need not belong to any
+- * chunk. Registry metadata must be unlinked before its mmap is destroyed. */
+-static int free_locked(void *ptr)
++/* The caller already found the owning arena and validated block while its
++ * mutex is held. Reuse those results: looking up ptr again would repeat the
++ * chunk-range scan or direct hash traversal on every free. Registry metadata
++ * must be unlinked before its mmap is destroyed. */
++static void free_locked(void *ptr, Block *block, DirectMap *direct)
+ {
+-    if (ptr == NULL) return 1;
+-    DirectMap *previous = NULL;
+-    DirectMap *direct = lookup_direct(ptr, &previous);
+     if (direct != NULL) {
+-        Block *block = (Block *)((char *)ptr - sizeof(Block));
+         account_free(block);
+         size_t bucket = direct_bucket(ptr);
+         DirectMap **link = &direct_buckets[bucket];
+@@ -721,20 +718,18 @@
+          * the bucket head or a preceding entry's hash_next. */
+         while (*link != direct) link = &(*link)->hash_next;
+         *link = direct->hash_next;
++        DirectMap *previous = direct->prev;
+         if (previous != NULL) previous->next = direct->next;
+         else direct_maps = direct->next;
+         if (direct->next != NULL) direct->next->prev = previous;
+         stats.current_heap_bytes -= direct->mapping_size;
+         global_sub_mapping(direct->mapping_size);
+         (void)munmap(direct->mapping, direct->mapping_size);
+-        return 1;
++        return;
+     }
+-    Block *block = lookup_chunk_block(ptr);
+-    if (block == NULL || !is_allocated(block)) return 0;
+     account_free(block);
+     block->word &= ~(size_t)HM_FLAG_ALLOC;
+     merge_and_insert(block);
+-    return 1;
+ }
+ 
+ /* Preserve the first failed invariant's details for the verbose API.
+@@ -953,8 +948,10 @@
+     int saved_errno = errno;
+     if (ptr != NULL) {
+         Block *block = NULL;
+-        if (lock_owner(ptr, &block, NULL)) {
+-            if (is_allocated(block) && free_locked(ptr)) {
++        DirectMap *direct = NULL;
++        if (lock_owner(ptr, &block, &direct)) {
++            if (is_allocated(block)) {
++                free_locked(ptr, block, direct);
+ #if HM_STATS
+                 ++stats.frees;
+ #endif
+@@ -1146,7 +1143,7 @@
+         return NULL;
+     }
+     memcpy(replacement, ptr, old_requested < size ? old_requested : size);
+-    (void)free_locked(ptr);
++    free_locked(ptr, block, direct);
+     debug_check();
+     unlock_heap();
+     errno = saved_errno;

@@ -40,10 +40,26 @@ static void *worker(void *argument)
         handoff[id][slot] = hm_malloc(64 + slot);
         if (handoff[id][slot] == NULL)
             __atomic_store_n(&failed, 1, __ATOMIC_RELAXED);
+        else ((unsigned char *)handoff[id][slot])[0] = (unsigned char)id;
     }
     (void)pthread_barrier_wait(&barrier);
-    for (size_t slot = 0; slot < SLOTS; ++slot)
-        hm_free(handoff[(id + 1) % THREADS][slot]);
+    for (size_t slot = 0; slot < SLOTS; ++slot) {
+        void *foreign = handoff[(id + 1) % THREADS][slot];
+        if (foreign == NULL) continue;
+        if (hm_usable_size(foreign) < 64 + slot)
+            __atomic_store_n(&failed, 1, __ATOMIC_RELAXED);
+        if ((slot & 1) == 0) {
+            void *grown = hm_realloc(foreign, 128 + slot);
+            if (grown == NULL) {
+                __atomic_store_n(&failed, 1, __ATOMIC_RELAXED);
+            } else {
+                if (((unsigned char *)grown)[0] != (unsigned char)((id + 1) % THREADS))
+                    __atomic_store_n(&failed, 1, __ATOMIC_RELAXED);
+                foreign = grown;
+            }
+        }
+        hm_free(foreign);
+    }
     return NULL;
 }
 

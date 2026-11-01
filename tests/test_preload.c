@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 int main(void)
 {
@@ -30,5 +31,24 @@ int main(void)
     for (size_t i = 0; i < 23 * 17; ++i)
         if (((unsigned char *)zero)[i] != 0) return 7;
     free(zero);
+
+    void *from_memalign = memalign(256, 33);
+    if (from_memalign == NULL || (uintptr_t)from_memalign % 256 != 0) return 8;
+    free(from_memalign);
+    void *from_valloc = valloc(19);
+    if (from_valloc == NULL ||
+        (uintptr_t)from_valloc % (size_t)getpagesize() != 0) return 9;
+    free(from_valloc);
+    void *invalid = (void *)(uintptr_t)0x1234;
+    if (posix_memalign(&invalid, 3, 64) != EINVAL ||
+        invalid != (void *)(uintptr_t)0x1234) return 10;
+    unsigned char *array = reallocarray(NULL, 32, 4);
+    if (array == NULL) return 11;
+    memset(array, 0x31, 128);
+    volatile size_t impossible_count = SIZE_MAX;
+    errno = 0;
+    if (reallocarray(array, impossible_count, 2) != NULL || errno != ENOMEM ||
+        array[0] != 0x31) return 12;
+    free(array);
     return 0;
 }

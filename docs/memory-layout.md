@@ -58,8 +58,9 @@ mapping base
 The initial free block occupies the span between the prologue and epilogue.
 The epilogue has size zero. All ordinary blocks in a chunk are contiguous;
 heap walking must land exactly on the epilogue. The last free block is the
-heap top, so realloc can grow into it if sufficient space remains. The allocator
-keeps one fully free chunk for reuse and unmaps additional empty chunks.
+heap top, so realloc can grow into it if sufficient space remains. The
+allocator keeps at most one fully free chunk per active arena for reuse and
+unmaps additional empty chunks in that arena.
 
 Requests of at least 128 KiB, or alignments above 16 bytes, get a direct
 mapping. The `DirectMap` descriptor lives at its mapping start. The payload
